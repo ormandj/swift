@@ -61,6 +61,8 @@ from keystoneclient.v3 import client as keystone_client
 from keystoneauth1 import session as keystone_session
 from keystoneauth1 import loading as keystone_loading
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 import six
 from six.moves import urllib
 
@@ -224,9 +226,23 @@ class S3Token(object):
         return resp
 
     def _json_request(self, creds_json):
+        # implementation of retry strategy on 502s to workaround issue
+        # exposed by data domain devices and the LB + keystone
+        # when we see a 502 from the LB, do not immediately fail
+        # as an unauthorized request, as it is likely transient
+        retry_strategy = Retry(
+            total=4,
+            status_forcelist=[502],
+            method_whitelist=["HEAD", "GET", "PUT", "POST"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+        http.mount("http://", adapter)
         headers = {'Content-Type': 'application/json'}
         try:
-            response = requests.post(self._request_uri,
+            response = http.post(self._request_uri,
                                      headers=headers, data=creds_json,
                                      verify=self._verify,
                                      timeout=self._timeout)
